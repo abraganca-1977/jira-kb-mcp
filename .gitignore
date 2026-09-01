@@ -1,0 +1,24 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets
+.env
+*.env
+
+# Local knowledge base data (per-user, not part of the repo)
+.jira-kb-mcp/
+data/
+*.lance/
+lancedb/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# OS
+.DS_Store
