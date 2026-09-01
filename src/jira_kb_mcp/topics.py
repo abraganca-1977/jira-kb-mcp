@@ -16,6 +16,35 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 MIN_ISSUES_FOR_CLUSTERING = 5
 TOP_TERMS_PER_TOPIC = 6
 
+# TfidfVectorizer's built-in stop_words list only covers English. Jira issues
+# in this workspace are frequently written in Spanish, so we add a small
+# Spanish stopword list on top of sklearn's English one to keep topic labels
+# from being dominated by filler words like "de", "el", "la", "se".
+_SPANISH_STOPWORDS = frozenset(
+    """
+    de la que el en y a los del se las por un para con no una su al lo como
+    mas pero sus le ya o este si porque esta entre cuando muy sin sobre
+    tambien me hasta hay donde quien desde todo nos durante todos uno les
+    ni contra otros ese eso ante ellos e esto mi antes algunos que unos yo
+    otro otras otra el tanto esa estos mucho quienes nada muchos cual poco
+    ella estar estas algunas algo nosotros mi mis tu te ti tu tus ellas
+    nosotras vosotros vosotras os mio mia mios mias tuyo tuya tuyos tuyas
+    suyo suya suyos suyas nuestro nuestra nuestros nuestras vuestro vuestra
+    vuestros vuestras esos esas estoy esta estamos estais estan este estos
+    estas fui fue fuimos fueron ser es soy eres somos sois son sea seas
+    seamos seais sean siendo sido tener tengo tienes tiene tenemos teneis
+    tienen para por hacia sobre bajo tras durante mediante segun
+    """.split()
+)
+
+
+def _combined_stopwords() -> list[str]:
+    """Spanish + English stopwords, since indexed Jira content in practice
+    mixes Spanish prose with English technical terms."""
+    from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+    return sorted(_SPANISH_STOPWORDS | ENGLISH_STOP_WORDS)
+
 
 @dataclass
 class Topic:
@@ -81,7 +110,7 @@ def _label_cluster(texts: list[str]) -> str:
     try:
         vectorizer = TfidfVectorizer(
             max_features=50,
-            stop_words=None,
+            stop_words=_combined_stopwords(),
             ngram_range=(1, 2),
             min_df=1,
         )

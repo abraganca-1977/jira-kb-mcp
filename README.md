@@ -147,6 +147,13 @@ All settings are environment variables (see `env.example`):
 - Read-only: this tool never writes back to Jira.
 - The streamable-http transport has no built-in authentication (see security
   note above).
+- Search quality depends on `top_k`. The default multilingual embedding
+  model (384 dimensions) ranks well when your query shares vocabulary with
+  the ticket (e.g. an error code, a feature name), but a long paraphrase
+  with no shared keywords (e.g. "disable the second factor for a user" when
+  every ticket says "2FA") may rank lower than expected in a very small
+  `top_k`. If a search feels like it's missing an obvious match, retry with
+  a larger `--top-k` before concluding it isn't indexed.
 
 ## License
 

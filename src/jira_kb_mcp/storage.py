@@ -16,7 +16,12 @@ import pyarrow as pa
 from .jira_client import JiraIssue
 
 TABLE_NAME = "issues"
-FTS_INDEX_COLUMNS = ["summary", "description", "comments_text"]
+
+# LanceDB's default (non-Tantivy) FTS index only supports a single text
+# column per index. Rather than add the tantivy-py dependency just to index
+# three columns, we concatenate summary + description + comments into one
+# search_text column and index that instead.
+FTS_INDEX_COLUMN = "search_text"
 
 
 def _schema(vector_dim: int) -> pa.Schema:
@@ -27,6 +32,7 @@ def _schema(vector_dim: int) -> pa.Schema:
             pa.field("summary", pa.string()),
             pa.field("description", pa.string()),
             pa.field("comments_text", pa.string()),
+            pa.field("search_text", pa.string()),
             pa.field("status", pa.string()),
             pa.field("resolution", pa.string()),
             pa.field("issue_type", pa.string()),
@@ -77,33 +83,40 @@ class Store:
             return
         try:
             self._table.create_fts_index(
-                FTS_INDEX_COLUMNS, replace=True, base_tokenizer="simple"
+                FTS_INDEX_COLUMN, replace=True, base_tokenizer="simple"
             )
-        except Exception:
-            # FTS index creation can fail on very small/empty tables; ignore
-            # and fall back to flat scan, which LanceDB does automatically.
-            pass
+        except Exception as exc:
+            # Surface this rather than silently degrading to vector-only
+            # search: a broken FTS index is easy to miss otherwise.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Could not build FTS index on %s: %s", FTS_INDEX_COLUMN, exc
+            )
         if count >= 256:
             try:
                 self._table.create_index(vector_column_name="vector", replace=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning("Could not build vector index: %s", exc)
 
     def latest_updated(self, project_key: str) -> str | None:
         """Returns the max 'updated' timestamp already indexed for a project,
         used to drive incremental sync."""
         if self._table.count_rows() == 0:
             return None
-        df = (
+        rows = (
             self._table.search()
             .where(f"project_key = '{project_key}'", prefilter=True)
             .select(["updated"])
             .limit(1_000_000)
-            .to_pandas()
+            .to_list()
         )
-        if df.empty:
+        if not rows:
             return None
-        return str(df["updated"].max())
+        values = [r["updated"] for r in rows if r.get("updated")]
+        return max(values) if values else None
 
     def count(self, project_key: str | None = None) -> int:
         if project_key:
@@ -137,35 +150,41 @@ class Store:
             .execute(rows)
         )
 
+    def has_fts_index(self) -> bool:
+        return any(idx.index_type == "FTS" for idx in self._table.list_indices())
+
     def hybrid_search(
         self, query_text: str, query_vector: list[float], top_k: int, project_key: str | None = None
     ) -> list[dict[str, Any]]:
-        query = (
-            self._table.search(query_type="hybrid")
-            .vector(query_vector)
-            .text(query_text)
-            .limit(top_k)
-        )
-        if project_key:
-            query = query.where(f"project_key = '{project_key}'", prefilter=True)
-        try:
-            return query.to_list()
-        except Exception:
-            # No FTS index yet (e.g. empty/small table): fall back to
-            # vector-only search.
-            vquery = self._table.search(query_vector).limit(top_k)
+        if self.has_fts_index():
+            query = (
+                self._table.search(query_type="hybrid", fts_columns=FTS_INDEX_COLUMN)
+                .vector(query_vector)
+                .text(query_text)
+                .limit(top_k)
+            )
             if project_key:
-                vquery = vquery.where(f"project_key = '{project_key}'", prefilter=True)
-            return vquery.to_list()
+                query = query.where(f"project_key = '{project_key}'", prefilter=True)
+            return query.to_list()
+
+        # No FTS index (e.g. ensure_indexes() was never called, or building
+        # it failed): fall back to vector-only search rather than erroring.
+        vquery = self._table.search(query_vector).limit(top_k)
+        if project_key:
+            vquery = vquery.where(f"project_key = '{project_key}'", prefilter=True)
+        return vquery.to_list()
 
 
 def issue_to_row(issue: JiraIssue, vector: list[float]) -> dict[str, Any]:
+    comments_text = "\n".join(issue.comments)
+    search_text = "\n\n".join(p for p in [issue.summary, issue.description, comments_text] if p)
     return {
         "key": issue.key,
         "project_key": issue.project_key,
         "summary": issue.summary,
         "description": issue.description,
-        "comments_text": "\n".join(issue.comments),
+        "comments_text": comments_text,
+        "search_text": search_text,
         "status": issue.status,
         "resolution": issue.resolution or "",
         "issue_type": issue.issue_type,

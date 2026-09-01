@@ -49,6 +49,15 @@ def _require(name: str) -> str:
     return value
 
 
+def _normalize_base_url(url: str) -> str:
+    """Ensures the Jira base URL has a scheme, so a value pasted without
+    'https://' (e.g. copied from a secret store) still works."""
+    url = url.strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url
+
+
 def load_config(env_file: Path | None = None) -> AppConfig:
     """Load configuration from environment / .env file.
 
@@ -60,7 +69,7 @@ def load_config(env_file: Path | None = None) -> AppConfig:
         if candidate and candidate.exists():
             load_dotenv(candidate, override=False)
 
-    base_url = _require("JIRA_URL").rstrip("/")
+    base_url = _normalize_base_url(_require("JIRA_URL"))
     email = _require("JIRA_EMAIL")
     api_token = _require("JIRA_API_TOKEN")
 
